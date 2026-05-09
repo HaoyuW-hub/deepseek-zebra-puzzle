@@ -1,0 +1,26 @@
+# 密钥
+.env
+
+# 环境
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 结果
+results/
+
+# 缓存
+.cache/
+~/.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+CLAUDE.md
+.claude/

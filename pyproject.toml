@@ -1,0 +1,19 @@
+[project]
+name = "deepseek-zebra-puzzle"
+version = "0.1.0"
+description = "DeepSeek R1 API evaluation on Zebra Puzzle task (extracted from inverse-scaling-ttc)"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "seaborn>=0.13",
+    "scipy>=1.10",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "python-dotenv>=1.0",
+    "safetytooling",
+]
+
+[tool.uv.sources]
+safetytooling = { path = "safety-tooling", editable = true }
