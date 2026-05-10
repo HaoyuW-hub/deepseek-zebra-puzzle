@@ -54,7 +54,7 @@ _DEFAULT_GLOBAL_INFERENCE_API: InferenceAPI | None = None
 DEEPSEEK_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEEPSEEK_MODELS = {"deepseek-chat", "deepseek-reasoner", "deepseek-r1", "deepseek-v3", "deepseek-v4-flash", "deepseek-r1-distill-qwen-14b"}
 LOCAL_DEEPSEEK_BASE_URL = "http://localhost:8000/v1"
-LOCAL_DEEPSEEK_MODELS = {"deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"}
+LOCAL_DEEPSEEK_MODELS = {"/opt/models/DeepSeek-R1-Distill-Qwen-14B"}
 
 
 class InferenceAPI:
