@@ -194,7 +194,7 @@ class ModelInterface:
             models_config=self.models_config,
         )
 
-        BASE_TOKENS = 16384
+        BASE_TOKENS = 8192
         if is_natural:
             stage1_max_tokens = BASE_TOKENS + (abs_budget - 1) * 4096
         else:
