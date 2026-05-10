@@ -4,5 +4,5 @@ task_definitions:
     name: "BBEH Zebra Puzzles"
     description: ""
     category: "Big Bench Extra Hard"
-    file_path: data/bbeh_zebra_puzzles_scored_g7.jsonl
+    file_path: data/bbeh_zebra_puzzles_scored_g567.jsonl
     metrics: accuracy
