@@ -1,0 +1,8 @@
+# Task configuration
+task_definitions:
+  bbeh_zebra_puzzles:
+    name: "BBEH Zebra Puzzles"
+    description: ""
+    category: "Big Bench Extra Hard"
+    file_path: data/g7_split1.jsonl
+    metrics: accuracy
