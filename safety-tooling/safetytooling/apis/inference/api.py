@@ -51,8 +51,10 @@ LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_GLOBAL_INFERENCE_API: InferenceAPI | None = None
 
-DEEPSEEK_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEEPSEEK_MODELS = {"deepseek-chat", "deepseek-reasoner", "deepseek-r1", "deepseek-v3", "deepseek-v4-flash", "deepseek-r1-distill-qwen-14b"}
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/beta"
+DEEPSEEK_MODELS = {"deepseek-chat", "deepseek-reasoner"}
+DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DASHSCOPE_MODELS = {"deepseek-v4-flash", "deepseek-r1-distill-qwen-14b", "deepseek-v3.2"}
 LOCAL_DEEPSEEK_BASE_URL = "http://localhost:8000/v1"
 LOCAL_DEEPSEEK_BASE_URL_2 = "http://localhost:8001/v1"
 LOCAL_DEEPSEEK_BASE_URL_3 = "http://localhost:8002/v1"
@@ -229,6 +231,14 @@ class InferenceAPI:
             frac_rate_limit=1,
             prompt_history_dir=self.prompt_history_dir,
             base_url=DEEPSEEK_BASE_URL,
+            openai_api_key=os.environ.get("DEEPSEEK_API_KEY", None),
+        )
+
+        # DashScope (Alibaba Cloud) — streaming needed for reasoning truncation
+        self._dashscope = OpenAIChatModel(
+            frac_rate_limit=1,
+            prompt_history_dir=self.prompt_history_dir,
+            base_url=DASHSCOPE_BASE_URL,
             openai_api_key=os.environ.get("DASHSCOPE_API_KEY", None),
         )
 
@@ -291,6 +301,7 @@ class InferenceAPI:
             "openrouter": self._openrouter,
             "vllm": self._vllm,
             "deepseek": self._deepseek,
+            "dashscope": self._dashscope,
             "local_deepseek": self._local_deepseek,
             "local_deepseek_2": self._local_deepseek_2,
             "local_deepseek_3": self._local_deepseek_3,
@@ -349,6 +360,8 @@ class InferenceAPI:
             return self._vllm
         elif model_id in DEEPSEEK_MODELS:
             return self._deepseek
+        elif model_id in DASHSCOPE_MODELS:
+            return self._dashscope
         elif model_id in LOCAL_DEEPSEEK_MODELS:
             return self._local_deepseek
         elif model_id in LOCAL_DEEPSEEK_MODELS_2:

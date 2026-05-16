@@ -149,16 +149,18 @@ def _get_stage1_natural_prompt(
 
     The model reasons naturally without knowing it will be truncated. The API-level
     max_tokens still enforces truncation, but the model receives no advance notice."""
-    if reasoning_budget == 0:
+    if reasoning_budget >= 2:
         return (
-            f"\nCRITICAL INSTRUCTION: DO NOT THINK. DO NOT output any reasoning, analysis, or thinking process whatsoever. "
-            f"You must output ONLY your final answer immediately using the <answer>X</answer> format. "
-            f"Do NOT generate any text before or after the <answer> tag."
+            f"\nYou will analyze this problem thoroughly and step by step. "
+            f"Think carefully through each clue and deduction. "
+            f"Your reasoning time is limited, so prioritize the most important clues "
+            f"and organize your deductions efficiently. "
+            f"Provide your final answer using the <answer>X</answer> format when you have completed your reasoning."
         )
-
     return (
-        f"\nYou will analyze this problem step by step. "
-        f"Provide your final answer when you are ready, using the <answer>X</answer> format."
+        f"\nYou will analyze this problem thoroughly and step by step. "
+        f"Think carefully through each clue and deduction. "
+        f"Provide your final answer using the <answer>X</answer> format when you have completed your reasoning."
     )
 
 
@@ -181,27 +183,28 @@ def _prepare_time_up_prompt(
 
     reasoning_block = truncated_reasoning if truncated_reasoning else "(No reasoning was produced before the interruption.)"
 
+    # Extract just the question line from the full puzzle prompt
+    import re
+    question_only = original_question
+    m = re.search(r"Question:\s*(.+?)(?:\n|$)", original_question)
+    if m:
+        question_only = m.group(1).strip()
+
     is_multiple_choice = bool(possible_answers)
     if is_multiple_choice:
         options_text = "\n".join(f"{chr(65 + i)}. {answer}" for i, answer in enumerate(possible_answers))
-        question_content = f"{original_question}\n\n{options_text}\n\nProvide your final answer as a single letter in the format <answer>X</answer>, where X is your chosen option."
+        question_line = f"Task: {question_only}\n{options_text}"
     else:
-        question_content = f"{original_question}\n\nProvide your final answer in the format <answer>X</answer>, where X is the final answer."
+        question_line = f"Task: {question_only}"
 
-    # Step 1: User asks the question (just like a fresh conversation)
-    messages.append(ChatMessage(role=MessageRole.user, content=question_content))
-
-    # Step 2: Assistant's partial reasoning (what the model "just generated" in Stage 1)
+    # Step 1: Assistant's partial reasoning (the model was working on this problem)
     messages.append(ChatMessage(role=MessageRole.assistant, content=reasoning_block))
 
-    # Step 3: Time's Up! — the interruption
+    # Step 2: Time's Up! — extract answer from reasoning, no re-solving
     messages.append(ChatMessage(
         role=MessageRole.user,
-        content=f"Time's Up! Your reasoning was interrupted after {budget} tokens. Based on your reasoning above, output your final answer now.",
+        content=f"Time's Up! Your reasoning was interrupted.\n\n{question_line}\n\nBased solely on the reasoning above, extract the final answer. Output ONLY <answer>X</answer> where X is your answer. Do not output anything else.",
     ))
-
-    # Step 4: Force the model to start its response from <answer>
-    messages.append(ChatMessage(role=MessageRole.assistant, content="<answer>", is_prefix=True))
     return Prompt(messages=messages)
 
 def _get_reasoning_params(

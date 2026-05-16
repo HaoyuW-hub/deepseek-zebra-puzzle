@@ -21,8 +21,9 @@ GS_COLORS = {5: "#55A868", 6: "#C44E52", 7: "#8C564B"}
 def get_reasoning_tokens(r: dict) -> int | None:
     usage = r.get("usage")
     if isinstance(usage, dict):
-        ctd = usage.get("completion_tokens_details", {})
-        return ctd.get("reasoning_tokens")
+        ctd = usage.get("completion_tokens_details")
+        if isinstance(ctd, dict):
+            return ctd.get("reasoning_tokens")
     return None
 
 
@@ -72,8 +73,7 @@ def main():
         for line in f:
             try:
                 r = json.loads(line)
-                if "Batch processing failed" not in str(r.get("error", "")):
-                    results.append(r)
+                results.append(r)
             except json.JSONDecodeError:
                 pass
 
@@ -81,10 +81,27 @@ def main():
 
     # Enrich data
     for r in results:
-        r["rtokens"] = get_reasoning_tokens(r)
+        rt = get_reasoning_tokens(r)
+        if rt is None:
+            rc = r.get("reasoning_content", "")
+            if rc:
+                rt = len(rc) // 4
+            else:
+                usage = r.get("usage", {}) or {}
+                rt = usage.get("output_tokens")
+        r["rtokens"] = rt
         r["gs"] = get_grid_size(r)
         r["mode"] = r.get("mode", "interrupted")
-        r["is_truncated"] = r.get("stop_reason") in ("max_tokens", "length")
+        # Detect truncation: compare reasoning chars vs actual stage1_max_tokens
+        rc_len = len(r.get("reasoning_content", "") or "")
+        s1_mt = r.get("stage1_max_tokens")
+        if s1_mt and s1_mt > 0:
+            # Truncated if reasoning_chars/4 is within 20% of the actual max_tokens
+            est_tokens = rc_len // 4
+            r["is_truncated"] = (r.get("stop_reason") in ("max_tokens", "length") or
+                                 est_tokens >= s1_mt * 0.8)
+        else:
+            r["is_truncated"] = (r.get("stop_reason") in ("max_tokens", "length"))
 
     df = pd.DataFrame(results)
     analysis_dir = results_dir.parent / "analysis"
@@ -201,7 +218,8 @@ def main():
         if len(sub) > 0:
             box_data.append(sub.values)
             box_labels.append(str(b))
-    ax.boxplot(box_data, labels=box_labels, patch_artist=True)
+    if box_data:
+        ax.boxplot(box_data, tick_labels=box_labels, patch_artist=True)
     ax.set_xlabel("Budget", fontsize=11)
     ax.set_ylabel("Reasoning Tokens", fontsize=11)
     ax.set_title("Reasoning Token Distribution by Budget", fontsize=12)

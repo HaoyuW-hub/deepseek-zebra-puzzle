@@ -136,11 +136,8 @@ class OpenAIChatModel(OpenAIModel):
             )
         else:
             api_func = self.aclient.chat.completions.create
-        is_local = self.base_url and "localhost" in self.base_url
         api_response: openai.types.chat.ChatCompletion = await api_func(
-            messages=prompt.openai_format(allow_assistant_end=True) if is_local else (
-                prompt.deepseek_format() if "deepseek" in model_id else prompt.openai_format()
-            ),
+            messages=prompt.deepseek_format() if "deepseek" in model_id else prompt.openai_format(),
             model=model_id,
             **kwargs,
         )

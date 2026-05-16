@@ -28,6 +28,8 @@ from src.utils.model_helpers import (
     import_time,
 )
 
+import openai
+
 console = Console()
 logging.basicConfig(
     level=logging.INFO,
@@ -83,9 +85,21 @@ class ModelInterface:
         max_tokens: int,
         reasoning_budget: int,
         reasoning_effort: Optional[str] = None,
+        extra_kwargs: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Make a single API call with retry logic. Returns processed result dict."""
         kwargs = {**model_config.get("api_params", {})}
+        if extra_kwargs:
+            # DashScope-specific params must go through extra_body
+            dashscope_params = {}
+            for key in list(extra_kwargs.keys()):
+                if key in ("enable_thinking",):
+                    dashscope_params[key] = extra_kwargs.pop(key)
+            if dashscope_params:
+                existing_body = kwargs.get("extra_body", {})
+                existing_body.update(dashscope_params)
+                kwargs["extra_body"] = existing_body
+            kwargs.update(extra_kwargs)
 
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort
@@ -96,15 +110,16 @@ class ModelInterface:
         else:
             api_max_tokens = max_tokens
 
+        effective_model = model_config["model_name"]
         max_retries = model_config.get("max_retries", DEFAULT_MAX_RETRIES)
         current_backoff = model_config.get("initial_backoff", DEFAULT_INITIAL_BACKOFF)
         max_backoff = model_config.get("max_backoff", DEFAULT_MAX_BACKOFF)
 
         for attempt in range(max_retries):
             try:
-                logger.debug(f"Attempt {attempt+1}/{max_retries} for {model_id} (budget: {reasoning_budget})")
+                logger.debug(f"Attempt {attempt+1}/{max_retries} for {effective_model} (budget: {reasoning_budget})")
                 responses = await self.api(
-                    model_id=model_config["model_name"],
+                    model_id=effective_model,
                     prompt=prompt,
                     temperature=model_config.get("temperature", 0.0),
                     max_tokens=api_max_tokens,
@@ -141,6 +156,128 @@ class ModelInterface:
             "reasoning_content": None,
         }
 
+    async def _streaming_stage1(
+        self,
+        model_id: str,
+        model_config: Dict,
+        prompt: Prompt,
+        budget: int,
+        reasoning_budget: int,
+        truncate: bool = True,
+    ) -> Dict[str, Any]:
+        """Stream Stage 1.
+
+        truncate=True (controlled): abort when reasoning tokens reach `budget`.
+        truncate=False (natural): let the stream run to completion.
+
+        Used for DashScope API where max_tokens doesn't constrain reasoning tokens."""
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+
+        client = openai.AsyncOpenAI(
+            api_key=os.environ.get("DASHSCOPE_API_KEY"),
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            timeout=600.0,
+        )
+
+        messages = prompt.openai_format(allow_assistant_end=False)
+
+        max_retries = model_config.get("max_retries", 5)
+        base_backoff = model_config.get("initial_backoff", 2.0)
+        max_backoff = model_config.get("max_backoff", 60.0)
+
+        for attempt in range(max_retries):
+            accumulated_reasoning = ""
+            accumulated_content = ""
+            stream_start = import_time()
+
+            try:
+                stream = await client.chat.completions.create(
+                    model=model_config["model_name"],
+                    messages=messages,
+                    temperature=model_config.get("temperature", 0.0),
+                    max_tokens=budget,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+
+                reasoning_tokens = 0
+                async for chunk in stream:
+                    if chunk.usage:
+                        reasoning_tokens = getattr(
+                            getattr(chunk.usage, "completion_tokens_details", None),
+                            "reasoning_tokens", 0
+                        )
+
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta:
+                        if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                            accumulated_reasoning += delta.reasoning_content
+                        if delta.content:
+                            accumulated_content += delta.content
+
+                    # Abort when estimated reasoning tokens exceed budget (controlled mode only)
+                    if truncate and len(accumulated_reasoning) // 4 >= budget:
+                        await stream.close()
+                        break
+
+                latency = import_time() - stream_start
+
+                if not accumulated_reasoning and not accumulated_content:
+                    logger.warning(f"Streaming Stage 1 completed but produced no content (budget={reasoning_budget})")
+
+                return {
+                    "model": model_id,
+                    "reasoning_budget": reasoning_budget,
+                    "response": accumulated_content,
+                    "extracted_answer": None,
+                    "latency": latency,
+                    "cost": 0,
+                    "error": None,
+                    "reasoning_content": accumulated_reasoning,
+                    "stop_reason": "max_tokens" if (truncate and reasoning_tokens >= budget) else "stop_sequence",
+                    "usage": None,
+                }
+
+            except Exception as e:
+                err_str = str(e)
+                is_rate_limit = '429' in err_str or 'rate' in err_str.lower()
+                is_retryable = is_rate_limit or 'timeout' in err_str.lower() or 'connection' in err_str.lower()
+
+                if is_retryable and attempt < max_retries - 1:
+                    backoff = min(base_backoff * (2 ** attempt), max_backoff)
+                    jitter = random.uniform(0, backoff * 0.3)
+                    sleep_time = backoff + jitter
+                    logger.warning(f"Streaming Stage 1 rate-limited (attempt {attempt+1}/{max_retries}), "
+                                   f"retrying in {sleep_time:.1f}s (budget={reasoning_budget})")
+                    await asyncio.sleep(sleep_time)
+                    continue
+
+                logger.warning(f"Streaming Stage 1 error (attempt {attempt+1}): {e}")
+                return {
+                    "model": model_id,
+                    "reasoning_budget": reasoning_budget,
+                    "latency": import_time() - stream_start,
+                    "error": f"Streaming failed: {err_str}",
+                    "response": None,
+                    "extracted_answer": None,
+                    "cost": 0,
+                    "reasoning_content": accumulated_reasoning if 'accumulated_reasoning' in dir() else "",
+                }
+
+        # Should not reach here, but just in case
+        return {
+            "model": model_id,
+            "reasoning_budget": reasoning_budget,
+            "latency": 0,
+            "error": "Streaming failed after all retries",
+            "response": None,
+            "extracted_answer": None,
+            "cost": 0,
+            "reasoning_content": "",
+        }
+
     async def evaluate_prompt(
         self,
         model_id: str,
@@ -175,12 +312,17 @@ class ModelInterface:
         base_system_prompt = model_config.get("system_prompt", "")
         stage2_max_tokens = self.evaluation_config.get("stage2_max_tokens", 4096)
 
-        is_natural = reasoning_budget < 0
-        abs_budget = abs(reasoning_budget) if is_natural else reasoning_budget
+        is_natural = reasoning_budget <= 0
+        abs_budget = abs(reasoning_budget) if reasoning_budget < 0 else reasoning_budget
 
         # --- Stage 1 prompt ---
-        if is_natural:
-            stage1_system_prompt = _get_stage1_natural_prompt(abs_budget, is_multiple_choice)
+        if reasoning_budget <= -7:
+            # Extended natural: same prompt as budget=-1, with varying truncation
+            stage1_system_prompt = _get_stage1_natural_prompt(1, is_multiple_choice)
+        elif is_natural or reasoning_budget == 1:
+            # budget=1: natural prompt with limit hint, but controlled truncation
+            prompt_budget = 2 if reasoning_budget == 1 else abs_budget
+            stage1_system_prompt = _get_stage1_natural_prompt(prompt_budget, is_multiple_choice)
         else:
             stage1_system_prompt = _get_stage1_interrupted_prompt(abs_budget, is_multiple_choice)
         full_system_prompt = base_system_prompt + stage1_system_prompt
@@ -194,23 +336,59 @@ class ModelInterface:
             models_config=self.models_config,
         )
 
-        BASE_TOKENS = 16384
-        if is_natural:
-            stage1_max_tokens = BASE_TOKENS + (abs_budget - 1) * 4096
+        BASE_TOKENS = 65536
+        if reasoning_budget <= -7:
+            # Extended natural: truncation at 16384 + (abs-1)*4096
+            stage1_max_tokens = 16384 + (abs_budget - 1) * 4096
+        elif reasoning_budget == 0:
+            # Natural prompt + hard truncation at BASE_TOKENS (natural_-1 recipe)
+            stage1_max_tokens = BASE_TOKENS
+        elif is_natural:
+            # Natural mode (budget < 0): no truncation, model thinks freely
+            stage1_max_tokens = 65536
         else:
+            # Controlled mode: uniform truncation at BASE_TOKENS
             stage1_max_tokens = BASE_TOKENS
 
         reasoning_effort = "high"
 
         stage1_start = import_time()
-        stage1_result = await self._single_api_call(
-            model_id, model_config, stage1_prompt, stage1_max_tokens, reasoning_budget,
-            reasoning_effort=reasoning_effort,
-        )
+        DASHSCOPE_MODELS = {"deepseek-v4-flash", "deepseek-r1-distill-qwen-14b", "deepseek-r1-14b"}
+        use_streaming = model_config["model_name"] in DASHSCOPE_MODELS
+        if use_streaming:
+            stage1_result = await self._streaming_stage1(
+                model_id, model_config, stage1_prompt, stage1_max_tokens, reasoning_budget,
+                truncate=(reasoning_budget <= -7 or reasoning_budget == 0 or not is_natural),
+            )
+        else:
+            stage1_result = await self._single_api_call(
+                model_id, model_config, stage1_prompt, stage1_max_tokens, reasoning_budget,
+                reasoning_effort=reasoning_effort,
+            )
         stage1_latency = import_time() - stage1_start
 
         stage1_completion = stage1_result.get("response")
         stage1_reasoning = stage1_result.get("reasoning_content") or ""
+
+        # Detect empty Stage 1 response (API returned nothing)
+        if not stage1_reasoning and not stage1_completion:
+            error_msg = stage1_result.get("error") or "Stage 1 produced empty response"
+            return {
+                "model": model_id,
+                "reasoning_budget": reasoning_budget,
+                "mode": "natural" if is_natural else "interrupted",
+                "response": None,
+                "extracted_answer": None,
+                "latency": stage1_latency,
+                "cost": 0,
+                "error": error_msg,
+                "reasoning_content": "",
+                "stop_reason": None,
+                "usage": None,
+                "two_stage": True,
+                "stage2_skipped": False,
+                "stage1_max_tokens": stage1_max_tokens,
+            }
 
         # Check if Stage 1 already produced a valid answer
         stage1_extracted = _extract_answer_tag(stage1_completion) if stage1_completion else None
@@ -244,7 +422,8 @@ class ModelInterface:
         stage2_start = import_time()
         stage2_result = await self._single_api_call(
             model_id, model_config, stage2_prompt, stage2_max_tokens, reasoning_budget,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort=None,
+            extra_kwargs={"enable_thinking": False},
         )
         stage2_latency = import_time() - stage2_start
 
@@ -268,6 +447,7 @@ class ModelInterface:
             "mode": "natural" if is_natural else "interrupted",
             "response": stage2_completion,
             "extracted_answer": stage2_extracted,
+            "stage2_reasoning_content": stage2_result.get("reasoning_content", ""),
             "latency": total_latency,
             "cost": total_cost,
             "error": error,

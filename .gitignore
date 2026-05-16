@@ -7,7 +7,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 
-# 结果
+# 数据与结果（托管于 HuggingFace）
+data/
 results/
 
 # 缓存

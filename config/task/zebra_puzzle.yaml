@@ -6,3 +6,9 @@ task_definitions:
     category: "Big Bench Extra Hard"
     file_path: data/bbeh_zebra_puzzles_scored_g567.jsonl
     metrics: accuracy
+  bbeh_zebra_puzzles_hard:
+    name: "BBEH Zebra Puzzles (Hard)"
+    description: "24 hardest puzzles from natural mode"
+    category: "Big Bench Extra Hard"
+    file_path: data/bbeh_zebra_puzzles_hard.jsonl
+    metrics: accuracy
